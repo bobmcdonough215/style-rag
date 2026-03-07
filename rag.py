@@ -64,28 +64,30 @@ def init_llm() -> OllamaLLM:
         base_url=OLLAMA_BASE_URL,
         temperature=TEMPERATURE,
         repeat_penalty=REPEAT_PENALTY,
-        model_kwargs={
-            "options": {
-                "num_predict": MAX_TOKENS_REVIEW,  # Use highest cap; model stops naturally for shorter answers
-                "think": ENABLE_THINKING,
-            }
-        },
+        num_predict=MAX_TOKENS_REVIEW,  # Highest cap; model stops naturally for shorter answers
+        reasoning=ENABLE_THINKING,  # False disables Qwen3.5 thinking mode — critical for speed
     )
 
 
 # ─── Retrieval ───────────────────────────────────────────────────────────────
 
-def retrieve(query: str, vectorstore: Chroma) -> list:
+def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> list:
     """
     Fetch TOP_K * FETCH_K_MULTIPLIER candidate chunks with relevance scores,
     discard any below SIMILARITY_THRESHOLD, then keep the top TOP_K_CHUNKS.
     Over-fetching before filtering gives the priority reranker better
     candidates to work with.
+
+    skip_threshold: When True (review mode), skip similarity filtering and
+    return the top K chunks regardless of score. Review inputs are prose,
+    not questions, so they score low against style guide chunks.
     """
     fetch_k = TOP_K_CHUNKS * FETCH_K_MULTIPLIER
     docs_with_scores = vectorstore.similarity_search_with_relevance_scores(
         query, k=fetch_k
     )
+    if skip_threshold:
+        return [doc for doc, score in docs_with_scores[:TOP_K_CHUNKS]]
     # Filter by similarity threshold — prevents hallucination from irrelevant chunks
     valid = [
         (doc, score) for doc, score in docs_with_scores
@@ -179,8 +181,8 @@ def query(
       - citations_formatted: str (ready-to-display citation block)
       - num_chunks: int (how many chunks were used)
     """
-    # 1. Retrieve and rerank
-    docs = retrieve(user_input, vectorstore)
+    # 1. Retrieve and rerank — review mode skips threshold
+    docs = retrieve(user_input, vectorstore, skip_threshold=(mode == "review"))
     ranked_docs = rerank_by_priority(docs)
 
     # 2. Handle no relevant chunks found

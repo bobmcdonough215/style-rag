@@ -134,8 +134,8 @@ if user_input:
         st.markdown(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # Retrieve and rerank
-    docs = rag.retrieve(user_input, vectorstore)
+    # Retrieve and rerank — review mode skips threshold (prose doesn't match style chunks)
+    docs = rag.retrieve(user_input, vectorstore, skip_threshold=(mode_key == "review"))
     ranked_docs = rag.rerank_by_priority(docs)
 
     with st.chat_message("assistant"):
