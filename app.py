@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from langchain_core.output_parsers import StrOutputParser
 import rag
+import cache
 from config import STRICT_MODE_DEFAULT, VECTORSTORE_PATH, MAX_CONVERSATION_TURNS
 
 st.set_page_config(page_title="Style RAG", layout="wide")
@@ -25,16 +26,21 @@ if not os.path.exists(VECTORSTORE_PATH):
 # ─── Cached Resources ───────────────────────────────────────────────────────
 
 @st.cache_resource
-def load_vectorstore():
-    embeddings = rag.init_embeddings()
-    return rag.init_vectorstore(embeddings)
+def load_embeddings():
+    return rag.init_embeddings()
+
+@st.cache_resource
+def load_vectorstore(_embeddings):
+    return rag.init_vectorstore(_embeddings)
 
 @st.cache_resource
 def load_llm():
     return rag.init_llm()
 
-vectorstore = load_vectorstore()
+embeddings = load_embeddings()
+vectorstore = load_vectorstore(embeddings)
 llm = load_llm()
+cache.init_cache()
 
 
 # ─── Session State ───────────────────────────────────────────────────────────
@@ -70,6 +76,8 @@ with st.sidebar:
         st.divider()
         st.caption("Last Query")
         meta = st.session_state.last_meta
+        cache_label = "Cache Hit" if meta.get("cache_status") == "hit" else "Full Pipeline"
+        st.markdown(f"**Response source:** {cache_label}")
         st.markdown(f"**Chunks used:** {meta['num_chunks']}")
         if meta.get("citations"):
             for c in meta["citations"]:
@@ -134,52 +142,81 @@ if user_input:
         st.markdown(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # Retrieve and rerank — review mode skips threshold (prose doesn't match style chunks)
-    docs = rag.retrieve(user_input, vectorstore, skip_threshold=(mode_key == "review"))
-    ranked_docs = rag.rerank_by_priority(docs)
+    # ── Cache check (question mode only — review inputs are unique) ──────
+    cache_hit = None
+    query_embedding = None
+    if mode_key != "review":
+        query_embedding = embeddings.embed_query(user_input)
+        cache_hit = cache.check_cache(query_embedding, mode_key, strict)
 
     with st.chat_message("assistant"):
-        if not ranked_docs:
-            answer = (
-                "This topic is not covered in your indexed guides. "
-                "Consider adding documentation for it."
-            )
+        if cache_hit:
+            # Cache hit — display instantly, no LLM call
+            answer = cache_hit["answer"]
+            citations = cache_hit["citations"]
             st.markdown(answer)
-            citations = []
-            citations_formatted = ""
-        else:
-            # Build chain and stream the response
-            system_prompt = rag.get_system_prompt(mode_key, strict)
-            context = rag.format_context(ranked_docs)
-            chain = (
-                rag.PROMPT_TEMPLATE
-                | llm
-                | StrOutputParser()
-            )
-
-            try:
-                stream = chain.stream({
-                    "system_prompt": system_prompt,
-                    "context": context,
-                    "question": user_input,
-                })
-                raw_response = st.write_stream(
-                    _filter_thinking(stream)
-                )
-            except Exception as e:
-                st.error(f"Generation failed: {e}")
-                # st.stop() halts the entire app — fine for single-user local tool.
-                # For multi-user deployment, replace with early return logic.
-                st.stop()
-
-            answer = rag.strip_thinking(raw_response)
-
-            # Programmatic citations — appended below the streamed response
-            citations = rag.build_citations(ranked_docs)
             citations_formatted = rag.format_citations(citations)
             if citations_formatted:
                 st.divider()
                 st.markdown(citations_formatted)
+            num_chunks = "cached"
+            cache_status = "hit"
+        else:
+            # Cache miss — full RAG pipeline
+            cache_status = "miss"
+            docs = rag.retrieve(user_input, vectorstore, skip_threshold=(mode_key == "review"))
+            ranked_docs = rag.rerank_by_priority(docs)
+
+            if not ranked_docs:
+                answer = (
+                    "This topic is not covered in your indexed guides. "
+                    "Consider adding documentation for it."
+                )
+                st.markdown(answer)
+                citations = []
+                citations_formatted = ""
+                num_chunks = 0
+            else:
+                # Build chain and stream the response
+                system_prompt = rag.get_system_prompt(mode_key, strict)
+                context = rag.format_context(ranked_docs)
+                chain = (
+                    rag.PROMPT_TEMPLATE
+                    | llm
+                    | StrOutputParser()
+                )
+
+                try:
+                    stream = chain.stream({
+                        "system_prompt": system_prompt,
+                        "context": context,
+                        "question": user_input,
+                    })
+                    raw_response = st.write_stream(
+                        _filter_thinking(stream)
+                    )
+                except Exception as e:
+                    st.error(f"Generation failed: {e}")
+                    # st.stop() halts the entire app — fine for single-user local tool.
+                    # For multi-user deployment, replace with early return logic.
+                    st.stop()
+
+                answer = rag.strip_thinking(raw_response)
+
+                # Programmatic citations — appended below the streamed response
+                citations = rag.build_citations(ranked_docs)
+                citations_formatted = rag.format_citations(citations)
+                if citations_formatted:
+                    st.divider()
+                    st.markdown(citations_formatted)
+                num_chunks = len(ranked_docs)
+
+                # Store in cache (question mode only)
+                if mode_key != "review" and query_embedding:
+                    cache.store_in_cache(
+                        user_input, query_embedding, answer,
+                        citations, mode_key, strict
+                    )
 
     # Store in history
     full_response = (
@@ -194,6 +231,7 @@ if user_input:
 
     # Update sidebar diagnostics on next rerun
     st.session_state.last_meta = {
-        "num_chunks": len(ranked_docs),
+        "num_chunks": num_chunks,
         "citations": citations,
+        "cache_status": cache_status,
     }
