@@ -19,7 +19,7 @@ from config import (
     CHUNK_SIZE_STANDARDS, CHUNK_OVERLAP_STANDARDS,
     CHUNK_SIZE_TEMPLATE, CHUNK_OVERLAP_TEMPLATE,
     REQUIRED_METADATA_KEYS,
-    DOCS_PATH_EDITORIAL, DOCS_PATH_WEB_CONTENT,
+    DOCS_PATH_HOUSE_STYLE, DOCS_PATH_EDITORIAL, DOCS_PATH_WEB_CONTENT,
 )
 
 # ─── Source Configuration ─────────────────────────────────────────────────────
@@ -42,7 +42,38 @@ def _scan_directory(directory: str, metadata: dict) -> list:
 
 
 SOURCES = [
-    # ─── Editorial PDFs (explicit — each has a curated source name) ───────────
+    # ─── House Style PDFs (Priority 1 — always wins over external guides) ────
+    {
+        "path": f"{DOCS_PATH_HOUSE_STYLE}/web-content-format-standards.pdf",
+        "type": "pdf",
+        "metadata": {
+            "source": "Meridian Web Content Format Standards",
+            "audience": "web-content",
+            "priority": 1,
+            "doc_type": "style"
+        }
+    },
+    {
+        "path": f"{DOCS_PATH_HOUSE_STYLE}/insights-distribution-standards.pdf",
+        "type": "pdf",
+        "metadata": {
+            "source": "Meridian Insights & Distribution Standards",
+            "audience": "web-content",
+            "priority": 1,
+            "doc_type": "process"
+        }
+    },
+    {
+        "path": f"{DOCS_PATH_HOUSE_STYLE}/html-component-reference.pdf",
+        "type": "pdf",
+        "metadata": {
+            "source": "Meridian HTML Component Reference",
+            "audience": "web-content",
+            "priority": 1,
+            "doc_type": "standards"
+        }
+    },
+    # ─── External Style PDFs (Priority 3 — defers to house style) ────────────
     {
         "path": f"{DOCS_PATH_EDITORIAL}/ap_style_guide-detailed.pdf",
         "type": "pdf",

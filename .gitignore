@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 venv/
 .DS_Store
+# Debug screenshots and test artifacts
+*.png
+*.PNG
+initialoutputThresholdIssue.pdf

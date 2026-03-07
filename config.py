@@ -12,6 +12,7 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 VECTORSTORE_PATH = "./vectorstore"
 CHECKSUM_PATH = "./vectorstore/checksums.json"
 CACHE_DB_PATH = "./cache/semantic_cache.db"
+DOCS_PATH_HOUSE_STYLE = "./docs/house-style"
 DOCS_PATH_EDITORIAL = "./docs/editorial"
 DOCS_PATH_WEB_CONTENT = "./docs/web-content"
 
