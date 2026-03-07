@@ -192,7 +192,7 @@ def compute_checksum(path: str) -> str:
     web content is always re-fetched since remote content can change without notice.
     """
     if path.startswith("http"):
-        return ""  # Fix: always re-fetch web sources — stable URL hash was a bug
+        return None  # Always re-fetch web sources — remote content can change without notice
     if not os.path.exists(path):
         return ""
     with open(path, "rb") as f:
@@ -276,7 +276,7 @@ def load_and_tag_documents(checksums: dict) -> tuple[list, dict]:
             chunk_overlap=c_overlap
         )
         chunks = splitter.split_documents(raw_docs)
-        print(f"  → {len(chunks)} chunks ({doc_type}, {c_size} tokens).")
+        print(f"  → {len(chunks)} chunks ({doc_type}, {c_size} chars).")
         all_docs.extend(chunks)
 
         # Update checksum — only written to disk after successful indexing
