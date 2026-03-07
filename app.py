@@ -159,7 +159,7 @@ if user_input:
             if citations_formatted:
                 st.divider()
                 st.markdown(citations_formatted)
-            num_chunks = "cached"
+            num_chunks = 0
             cache_status = "hit"
         else:
             # Cache miss — full RAG pipeline
