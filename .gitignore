@@ -9,3 +9,4 @@ venv/
 *.png
 *.PNG
 initialoutputThresholdIssue.pdf
+DEVELOPER_GUIDE.md
