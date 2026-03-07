@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hashlib
 import argparse
@@ -8,7 +9,7 @@ from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
-import glob as globmod
+import glob
 from config import (
     VECTORSTORE_PATH,
     CHECKSUM_PATH,
@@ -32,10 +33,9 @@ def _scan_directory(directory: str, metadata: dict) -> list:
     Drop a new PDF in the folder, re-run ingest — no config changes needed.
     """
     entries = []
-    for filepath in sorted(globmod.glob(os.path.join(directory, "*.pdf"))):
+    for filepath in sorted(glob.glob(os.path.join(directory, "*.pdf"))):
         # Derive a human-readable source name from the filename
-        name = os.path.splitext(os.path.basename(filepath))[0]
-        name = name.replace("-", " ").replace("_", " ").replace("  ", " ").strip()
+        name = re.sub(r"[-_]+", " ", os.path.splitext(os.path.basename(filepath))[0]).strip()
         entry_metadata = {**metadata, "source": name}
         entries.append({"path": filepath, "type": "pdf", "metadata": entry_metadata})
     return entries
@@ -95,7 +95,7 @@ SOURCES = [
         }
     },
     {
-        "path": "https://www.w3.org/TR/WCAG22/",
+        "path": "https://www.w3.org/WAI/WCAG22/quickref/",
         "type": "web",
         "metadata": {
             "source": "WCAG 2.2 Accessibility Guidelines",

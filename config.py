@@ -27,7 +27,7 @@ MAX_CONVERSATION_TURNS = 6     # Sliding window memory — drops oldest turns fi
 
 # ─── Retrieval & Thresholds ───────────────────────────────────────────────────
 TOP_K_CHUNKS = 4               # Chunks retrieved per query
-SIMILARITY_THRESHOLD = 0.7     # Minimum score for filtered retrieval
+SIMILARITY_THRESHOLD = 0.55    # Tuned down from 0.7 — Chroma + OpenAI embeddings score lower than expected
 SIMILARITY_THRESHOLD_CACHE = 0.95  # Strict cache threshold — high for compliance
 FETCH_K_MULTIPLIER = 3         # Pull TOP_K * 3 = 12 raw chunks, rerank by priority, keep top 4
 

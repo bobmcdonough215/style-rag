@@ -153,7 +153,7 @@ if user_input:
             context = rag.format_context(ranked_docs)
             chain = (
                 rag.PROMPT_TEMPLATE
-                | llm.bind(num_predict=rag.get_max_tokens(mode_key))
+                | llm
                 | StrOutputParser()
             )
 

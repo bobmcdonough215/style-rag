@@ -11,9 +11,7 @@ from config import (
     OLLAMA_BASE_URL,
     VECTORSTORE_PATH,
     TEMPERATURE,
-    MAX_TOKENS_QUESTION,
     MAX_TOKENS_REVIEW,
-    MAX_TOKENS_FORMAT,
     ENABLE_THINKING,
     REPEAT_PENALTY,
     TOP_K_CHUNKS,
@@ -65,9 +63,13 @@ def init_llm() -> OllamaLLM:
         model=LLM_MODEL,
         base_url=OLLAMA_BASE_URL,
         temperature=TEMPERATURE,
-        num_predict=MAX_TOKENS_QUESTION,
         repeat_penalty=REPEAT_PENALTY,
-        think=ENABLE_THINKING,
+        model_kwargs={
+            "options": {
+                "num_predict": MAX_TOKENS_REVIEW,  # Use highest cap; model stops naturally for shorter answers
+                "think": ENABLE_THINKING,
+            }
+        },
     )
 
 
@@ -116,14 +118,6 @@ def get_system_prompt(mode: str, strict: bool = STRICT_MODE_DEFAULT) -> str:
         return CONFLICT_RESOLUTION_PROMPT
     else:
         return QUESTION_MODE_PROMPT_STRICT if strict else QUESTION_MODE_PROMPT_RELAXED
-
-
-def get_max_tokens(mode: str) -> int:
-    if mode == "review":
-        return MAX_TOKENS_REVIEW
-    elif mode == "format":
-        return MAX_TOKENS_FORMAT
-    return MAX_TOKENS_QUESTION
 
 
 def format_context(docs: list) -> str:
@@ -203,9 +197,10 @@ def query(
     system_prompt = get_system_prompt(mode, strict)
     context = format_context(ranked_docs)
 
-    # 4. Generate with mode-appropriate token limit via .bind()
-    #    Never mutate llm directly — it's a cached shared object in Streamlit
-    chain = PROMPT_TEMPLATE | llm.bind(num_predict=get_max_tokens(mode)) | StrOutputParser()
+    # 4. Generate — num_predict set at init to max (review mode cap).
+    #    Model stops naturally for shorter answers; no .bind() needed.
+    #    (.bind(options=...) overrides model_kwargs and loses think=False)
+    chain = PROMPT_TEMPLATE | llm | StrOutputParser()
     raw_response = chain.invoke({
         "system_prompt": system_prompt,
         "context": context,
