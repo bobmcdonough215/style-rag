@@ -164,7 +164,12 @@ if user_input:
         else:
             # Cache miss — full RAG pipeline
             cache_status = "miss"
-            docs = rag.retrieve(user_input, vectorstore, skip_threshold=(mode_key == "review"))
+            # Review mode: reformulate prose into style topics for retrieval
+            if mode_key == "review":
+                retrieval_query = rag.build_review_query(user_input, llm)
+            else:
+                retrieval_query = user_input
+            docs = rag.retrieve(retrieval_query, vectorstore, skip_threshold=(mode_key == "review"))
             ranked_docs = rag.rerank_by_priority(docs)
 
             if not ranked_docs:

@@ -22,6 +22,7 @@ from config import (
     QUESTION_MODE_PROMPT_RELAXED,
     REVIEW_MODE_PROMPT,
     REVIEW_MODE_FEW_SHOT_EXAMPLE,
+    REVIEW_QUERY_EXTRACTION_PROMPT,
     WEB_CONTENT_MODE_PROMPT,
     FORMAT_GENERATION_PROMPT,
     CONFLICT_RESOLUTION_PROMPT,
@@ -69,6 +70,23 @@ def init_llm() -> OllamaLLM:
     )
 
 
+# ─── Review Mode Query Reformulation ─────────────────────────────────────────
+# Raw prose scores ~0.05 against style guide chunks — semantically unrelated.
+# This extracts the style topics the prose touches so retrieval finds the
+# right rules. See EVAL_REPORT.md Issue #2 for the full analysis.
+
+def build_review_query(user_input: str, llm: OllamaLLM) -> str:
+    """
+    Extract style-relevant topics from review prose to produce a search
+    query that matches style guide chunks. Bridges the semantic gap between
+    'Vice President John Davis' and 'AP style capitalizes titles before names'.
+    """
+    prompt = REVIEW_QUERY_EXTRACTION_PROMPT.format(text=user_input[:1000])
+    raw = llm.invoke(prompt)
+    query = strip_thinking(raw).strip()
+    return query if query else user_input
+
+
 # ─── Retrieval ───────────────────────────────────────────────────────────────
 
 def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> list:
@@ -95,6 +113,24 @@ def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> l
     ]
     # Keep only the top K after filtering
     return [doc for doc, score in valid[:TOP_K_CHUNKS]]
+
+
+def retrieve_with_scores(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> list:
+    """
+    Same as retrieve() but returns (doc, score) tuples.
+    Used by the eval suite to analyze score distributions and filtering behavior.
+    """
+    fetch_k = TOP_K_CHUNKS * FETCH_K_MULTIPLIER
+    docs_with_scores = vectorstore.similarity_search_with_relevance_scores(
+        query, k=fetch_k
+    )
+    if skip_threshold:
+        return docs_with_scores[:TOP_K_CHUNKS]
+    valid = [
+        (doc, score) for doc, score in docs_with_scores
+        if score >= SIMILARITY_THRESHOLD
+    ]
+    return valid[:TOP_K_CHUNKS]
 
 
 def rerank_by_priority(docs: list) -> list:
@@ -181,8 +217,13 @@ def query(
       - citations_formatted: str (ready-to-display citation block)
       - num_chunks: int (how many chunks were used)
     """
-    # 1. Retrieve and rerank — review mode skips threshold
-    docs = retrieve(user_input, vectorstore, skip_threshold=(mode == "review"))
+    # 1. Retrieve and rerank
+    #    Review mode: reformulate prose into style topics for better retrieval
+    if mode == "review":
+        retrieval_query = build_review_query(user_input, llm)
+    else:
+        retrieval_query = user_input
+    docs = retrieve(retrieval_query, vectorstore, skip_threshold=(mode == "review"))
     ranked_docs = rerank_by_priority(docs)
 
     # 2. Handle no relevant chunks found

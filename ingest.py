@@ -73,6 +73,16 @@ SOURCES = [
             "doc_type": "standards"
         }
     },
+    {
+        "path": f"{DOCS_PATH_HOUSE_STYLE}/footnote-policy.pdf",
+        "type": "pdf",
+        "metadata": {
+            "source": "Meridian Footnote Policy",
+            "audience": "web-content",
+            "priority": 1,
+            "doc_type": "style"
+        }
+    },
     # ─── External Style PDFs (Priority 3 — defers to house style) ────────────
     {
         "path": f"{DOCS_PATH_EDITORIAL}/ap_style_guide-detailed.pdf",
