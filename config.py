@@ -17,14 +17,25 @@ DOCS_PATH_EDITORIAL = "./docs/editorial"
 DOCS_PATH_WEB_CONTENT = "./docs/web-content"
 
 # ─── Generation & Inference ───────────────────────────────────────────────────
-# Controls Qwen3.5 behavior — tune here, never hardcode in rag.py
-TEMPERATURE = 0.1              # Near-deterministic; critical for compliance tools
-MAX_TOKENS_QUESTION = 600      # Cap for question mode responses
-MAX_TOKENS_REVIEW = 1200       # Review mode needs room for issues list + correction
-MAX_TOKENS_FORMAT = 800        # Format generation mode
+# Qwen3.5 recommended parameters per mode (source: huggingface.co/Qwen/Qwen3.5-9B)
+# All modes use non-thinking (instruct) mode for speed.
 ENABLE_THINKING = False        # Disable Qwen3.5 thinking mode — kills latency
-REPEAT_PENALTY = 1.1           # Penalize repetitive output; 1.0 = off
 MAX_CONVERSATION_TURNS = 6     # Sliding window memory — drops oldest turns first
+
+# Question mode — low temperature for factual accuracy
+QUESTION_TEMPERATURE = 0.3     # Low for compliance; Qwen recommends 0.7 baseline
+QUESTION_TOP_K = 20            # Qwen recommended
+QUESTION_TOP_P = 0.8           # Qwen recommended for non-thinking mode
+QUESTION_REPEAT_PENALTY = 1.0  # Off per Qwen docs (they use presence_penalty via OpenAI API)
+MAX_TOKENS_QUESTION = 600      # Cap for question mode responses
+
+# Review mode — higher temperature lets the model explore more issues
+REVIEW_TEMPERATURE = 0.7       # Qwen recommended for non-thinking general tasks
+REVIEW_TOP_K = 20              # Qwen recommended
+REVIEW_TOP_P = 0.8             # Qwen recommended for non-thinking mode
+REVIEW_REPEAT_PENALTY = 1.0    # Off per Qwen docs
+MAX_TOKENS_REVIEW = 1200       # Review needs room for issues list + corrected version
+MAX_TOKENS_FORMAT = 800        # Format generation mode
 
 # ─── Retrieval & Thresholds ───────────────────────────────────────────────────
 TOP_K_CHUNKS = 4               # Chunks retrieved per query
@@ -71,7 +82,9 @@ Answer questions based ONLY on the context provided below. Do not use general kn
 
 Use whatever relevant information is available in the context, even if it only partially addresses the question. If the context covers the topic at a high level but lacks specific details, answer with what is available and note what is not covered.
 
-Only respond with "This topic is not covered in your indexed guides. Consider adding documentation for it." if the context contains NO relevant information whatsoever.
+The context does not need to mention every term from the question to be relevant. If the context provides standards, rules, or guidelines that would logically apply to the scenario described in the question, use that context to answer.
+
+Only respond with "This topic is not covered in your indexed guides. Consider adding documentation for it." if the context contains NO relevant information whatsoever. Never append this phrase to the end of an otherwise complete answer.
 
 Always cite your source at the end of your response in this format:
 *Source: [Document Name], [Section or Page if available]*
@@ -92,66 +105,35 @@ Always cite your source for context-derived information:
 Be concise. Do not pad responses.
 """
 
-REVIEW_QUERY_EXTRACTION_PROMPT = """Identify the style, grammar, and formatting topics in this text that a copy editor should check against a style guide. Output ONLY a brief comma-separated list of style topics to look up. Do not correct the text.
+REVIEW_QUERY_EXTRACTION_PROMPT = """Identify the style, grammar, and formatting topics in this text that a copy editor should check against a style guide. Name the relevant style guides (AP style, Chicago, APA, house style) for each topic when applicable. Output ONLY a brief comma-separated list of style topics to look up. Do not correct the text.
 
 Text: "{text}"
 
 Style topics:"""
 
 REVIEW_MODE_PROMPT = """
-You are a copy editor and web standards reviewer.
+You are a copy editor. Review the user's text for style issues using ONLY the explicit rules in the context below. If you are unsure whether a rule applies, skip it.
 
-Review the content provided by the user for style, grammar, and web standards issues.
-Base your review ONLY on the context provided below.
-
-Format your response as follows:
+Respond with ONLY this format — no explanations, no reasoning, no notes:
 
 **Issues Found:**
-1. [Issue number]
-   - Original: "[exact original text]"
-   - Issue: [describe the problem and the rule it violates]
-   - Corrected: "[corrected version]"
-   - Source: [Document Name, Section or Page]
-
-2. [Repeat for each issue]
+1. "[original text]" → "[corrected text]" — [rule violated, one sentence] (Source: [document name])
 
 **Fully Corrected Version:**
-[Rewrite the entire input with all corrections applied]
-
-If no issues are found, say explicitly: "No style or standards issues found based on your indexed guides."
-
-Do not add commentary outside this format. Do not editorialize.
+"[full corrected text with all fixes applied]"
 """
 
 REVIEW_MODE_FEW_SHOT_EXAMPLE = """
-Here is an example of the correct output format:
+Example:
 
-INPUT:
-"On September 3rd, 2025, Vice President of Marketing, John Davis, announced the launch of our new Website."
-
-OUTPUT:
+INPUT: "The team met on june 15th to discuss the Annual Report."
 
 **Issues Found:**
-1.
-   - Original: "September 3rd"
-   - Issue: AP style abbreviates months with six or more letters when used with a specific date. Ordinal suffixes (1st, 2nd, 3rd) are never used in date formatting.
-   - Corrected: "Sept. 3"
-   - Source: AP Stylebook, Dates
-
-2.
-   - Original: "Vice President of Marketing, John Davis"
-   - Issue: AP style does not use a comma between a formal title and the name that follows it when the title precedes the name.
-   - Corrected: "Vice President of Marketing John Davis"
-   - Source: AP Stylebook, Titles
-
-3.
-   - Original: "Website"
-   - Issue: "Website" should be lowercase per AP style update (2019).
-   - Corrected: "website"
-   - Source: AP Stylebook, Internet/Technology terms
+1. "june 15th" → "June 15" — Month names are capitalized; ordinal suffixes are not used with dates. (Source: Meridian Web Content Format Standards)
+2. "Annual Report" → "annual report" — Title case is for content titles only, not inline references. (Source: Meridian Web Content Format Standards)
 
 **Fully Corrected Version:**
-"On Sept. 3, 2025, Vice President of Marketing John Davis announced the launch of our new website."
+"The team met on June 15 to discuss the annual report."
 """
 
 WEB_CONTENT_MODE_PROMPT = """

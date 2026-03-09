@@ -10,10 +10,17 @@ from config import (
     EMBEDDING_MODEL,
     OLLAMA_BASE_URL,
     VECTORSTORE_PATH,
-    TEMPERATURE,
-    MAX_TOKENS_REVIEW,
     ENABLE_THINKING,
-    REPEAT_PENALTY,
+    QUESTION_TEMPERATURE,
+    QUESTION_TOP_K,
+    QUESTION_TOP_P,
+    QUESTION_REPEAT_PENALTY,
+    MAX_TOKENS_QUESTION,
+    REVIEW_TEMPERATURE,
+    REVIEW_TOP_K,
+    REVIEW_TOP_P,
+    REVIEW_REPEAT_PENALTY,
+    MAX_TOKENS_REVIEW,
     TOP_K_CHUNKS,
     SIMILARITY_THRESHOLD,
     FETCH_K_MULTIPLIER,
@@ -60,13 +67,31 @@ def init_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
 
 
 def init_llm() -> OllamaLLM:
+    """Question/general mode LLM — low temperature for factual accuracy."""
     return OllamaLLM(
         model=LLM_MODEL,
         base_url=OLLAMA_BASE_URL,
-        temperature=TEMPERATURE,
-        repeat_penalty=REPEAT_PENALTY,
-        num_predict=MAX_TOKENS_REVIEW,  # Highest cap; model stops naturally for shorter answers
-        reasoning=ENABLE_THINKING,  # False disables Qwen3.5 thinking mode — critical for speed
+        temperature=QUESTION_TEMPERATURE,
+        top_k=QUESTION_TOP_K,
+        top_p=QUESTION_TOP_P,
+        repeat_penalty=QUESTION_REPEAT_PENALTY,
+        num_predict=MAX_TOKENS_QUESTION,
+        reasoning=ENABLE_THINKING,
+    )
+
+
+def init_review_llm() -> OllamaLLM:
+    """Review mode LLM — higher temperature to explore more issues,
+    presence_penalty to prevent deliberation loops."""
+    return OllamaLLM(
+        model=LLM_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=REVIEW_TEMPERATURE,
+        top_k=REVIEW_TOP_K,
+        top_p=REVIEW_TOP_P,
+        repeat_penalty=REVIEW_REPEAT_PENALTY,
+        num_predict=MAX_TOKENS_REVIEW,
+        reasoning=ENABLE_THINKING,
     )
 
 
@@ -207,9 +232,15 @@ def query(
     llm: OllamaLLM,
     mode: str = "question",
     strict: bool = STRICT_MODE_DEFAULT,
+    review_llm: OllamaLLM = None,
 ) -> dict:
     """
     Main RAG pipeline entry point.
+
+    Args:
+      review_llm: Separate LLM instance tuned for review mode. Uses different
+                  Qwen3.5 parameters (higher temp, presence_penalty) to prevent
+                  deliberation loops. Falls back to llm if not provided.
 
     Returns dict with:
       - answer: str (cleaned LLM response)
@@ -240,10 +271,9 @@ def query(
     system_prompt = get_system_prompt(mode, strict)
     context = format_context(ranked_docs)
 
-    # 4. Generate — num_predict set at init to max (review mode cap).
-    #    Model stops naturally for shorter answers; no .bind() needed.
-    #    (.bind(options=...) overrides model_kwargs and loses think=False)
-    chain = PROMPT_TEMPLATE | llm | StrOutputParser()
+    # 4. Generate — select the right LLM for the mode
+    active_llm = review_llm if (mode == "review" and review_llm) else llm
+    chain = PROMPT_TEMPLATE | active_llm | StrOutputParser()
     raw_response = chain.invoke({
         "system_prompt": system_prompt,
         "context": context,

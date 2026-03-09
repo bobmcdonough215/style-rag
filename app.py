@@ -37,9 +37,14 @@ def load_vectorstore(_embeddings):
 def load_llm():
     return rag.init_llm()
 
+@st.cache_resource
+def load_review_llm():
+    return rag.init_review_llm()
+
 embeddings = load_embeddings()
 vectorstore = load_vectorstore(embeddings)
 llm = load_llm()
+review_llm = load_review_llm()
 cache.init_cache()
 
 
@@ -185,9 +190,10 @@ if user_input:
                 # Build chain and stream the response
                 system_prompt = rag.get_system_prompt(mode_key, strict)
                 context = rag.format_context(ranked_docs)
+                active_llm = review_llm if mode_key == "review" else llm
                 chain = (
                     rag.PROMPT_TEMPLATE
-                    | llm
+                    | active_llm
                     | StrOutputParser()
                 )
 
