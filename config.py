@@ -71,6 +71,38 @@ PRIORITY_EXTERNAL_STANDARDS = 4 # WCAG, plainlanguage.gov
 STRICT_MODE_DEFAULT = True      # Answer only from indexed docs by default
 SOURCE_CITATION_ENABLED = True  # Always append source attribution
 
+# ─── Startup Validation ──────────────────────────────────────────────────────
+# Fail loud and early if config values are invalid — prevents silent
+# misbehavior like returning zero results or generating garbage.
+
+def _validate():
+    errors = []
+    if not (0 <= SIMILARITY_THRESHOLD <= 1):
+        errors.append(f"SIMILARITY_THRESHOLD={SIMILARITY_THRESHOLD} — must be between 0 and 1")
+    if not (0 <= SIMILARITY_THRESHOLD_CACHE <= 1):
+        errors.append(f"SIMILARITY_THRESHOLD_CACHE={SIMILARITY_THRESHOLD_CACHE} — must be between 0 and 1")
+    if TOP_K_CHUNKS < 1:
+        errors.append(f"TOP_K_CHUNKS={TOP_K_CHUNKS} — must be at least 1")
+    if FETCH_K_MULTIPLIER < 1:
+        errors.append(f"FETCH_K_MULTIPLIER={FETCH_K_MULTIPLIER} — must be at least 1")
+    if not (0 <= QUESTION_TEMPERATURE <= 2):
+        errors.append(f"QUESTION_TEMPERATURE={QUESTION_TEMPERATURE} — must be between 0 and 2")
+    if not (0 <= REVIEW_TEMPERATURE <= 2):
+        errors.append(f"REVIEW_TEMPERATURE={REVIEW_TEMPERATURE} — must be between 0 and 2")
+    if MAX_TOKENS_QUESTION < 1:
+        errors.append(f"MAX_TOKENS_QUESTION={MAX_TOKENS_QUESTION} — must be at least 1")
+    if MAX_TOKENS_REVIEW < 1:
+        errors.append(f"MAX_TOKENS_REVIEW={MAX_TOKENS_REVIEW} — must be at least 1")
+    if MAX_CONVERSATION_TURNS < 1:
+        errors.append(f"MAX_CONVERSATION_TURNS={MAX_CONVERSATION_TURNS} — must be at least 1")
+    if errors:
+        raise ValueError(
+            "Invalid configuration:\n  " + "\n  ".join(errors)
+        )
+
+_validate()
+
+
 # ─── Prompt Constants ─────────────────────────────────────────────────────────
 # All prompts live here — isolated from logic for easy tuning
 # See style-rag-prompts.md for full documentation and iteration log

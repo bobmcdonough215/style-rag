@@ -285,3 +285,31 @@ class TestRAGPipelineError:
         vs.similarity_search_with_relevance_scores.side_effect = ConnectionError("db down")
         with pytest.raises(rag.RAGPipelineError, match="Retrieval failed"):
             rag.retrieve("test", vs)
+
+
+# ─── Config Validation ───────────────────────────────────────────────────────
+
+class TestConfigValidation:
+    def test_current_config_is_valid(self):
+        """Importing config should not raise — validates current values."""
+        import config  # noqa: F401
+
+    def test_validate_catches_bad_threshold(self):
+        import config
+        original = config.SIMILARITY_THRESHOLD
+        try:
+            config.SIMILARITY_THRESHOLD = 2.0
+            with pytest.raises(ValueError, match="SIMILARITY_THRESHOLD"):
+                config._validate()
+        finally:
+            config.SIMILARITY_THRESHOLD = original
+
+    def test_validate_catches_bad_top_k(self):
+        import config
+        original = config.TOP_K_CHUNKS
+        try:
+            config.TOP_K_CHUNKS = -1
+            with pytest.raises(ValueError, match="TOP_K_CHUNKS"):
+                config._validate()
+        finally:
+            config.TOP_K_CHUNKS = original

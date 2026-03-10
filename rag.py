@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 import httpx
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaLLM
@@ -159,6 +160,12 @@ def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False,
             if score >= SIMILARITY_THRESHOLD
         ]
         pairs = valid[:TOP_K_CHUNKS]
+    if pairs:
+        top_score = pairs[0][1]
+        logger.info("Retrieval: %d chunks, top_score=%.4f, skip_threshold=%s",
+                     len(pairs), top_score, skip_threshold)
+    else:
+        logger.info("Retrieval: 0 chunks (all below threshold %.2f)", SIMILARITY_THRESHOLD)
     if with_scores:
         return pairs
     return [doc for doc, score in pairs]
@@ -258,6 +265,8 @@ def query(
       - citations_formatted: str (ready-to-display citation block)
       - num_chunks: int (how many chunks were used)
     """
+    t_start = time.perf_counter()
+
     # 1. Retrieve and rerank
     #    Review mode: reformulate prose into style topics for better retrieval
     if mode == "review":
@@ -269,6 +278,8 @@ def query(
 
     # 2. Handle no relevant chunks found
     if not ranked_docs:
+        logger.info("Query [%s] refused — no chunks above threshold (%.2fs)",
+                     mode, time.perf_counter() - t_start)
         return {
             "answer": "This topic is not covered in your indexed guides. "
                       "Consider adding documentation for it.",
@@ -294,6 +305,8 @@ def query(
         # Streaming path — returns an iterator for the UI to consume.
         # Caller is responsible for joining chunks and passing the full
         # text back through finalize_response() afterward.
+        logger.info("Query [%s] streaming — %d chunks (%.2fs to retrieval)",
+                     mode, len(ranked_docs), time.perf_counter() - t_start)
         return {
             "stream": chain.stream(prompt_vars),
             "docs": ranked_docs,
@@ -305,12 +318,17 @@ def query(
         logger.error("LLM generation failed: %s", e)
         raise RAGPipelineError(f"Generation failed: {e}") from e
 
+    elapsed = time.perf_counter() - t_start
+
     # 5. Clean response
     answer = strip_thinking(raw_response)
 
     # 6. Build programmatic citations
     citations = build_citations(ranked_docs)
     citations_formatted = format_citations(citations)
+
+    logger.info("Query [%s] complete — %d chunks, %d chars, %.2fs",
+                 mode, len(ranked_docs), len(answer), elapsed)
 
     return {
         "answer": answer,
