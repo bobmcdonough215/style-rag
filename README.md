@@ -15,6 +15,7 @@ Organizations maintain dozens of overlapping style guides — AP Stylebook, inte
 - **Semantic Cache** — Near-instant responses on repeated queries via SQLite-backed embedding similarity cache
 - **Programmatic Citations** — Citations are extracted from chunk metadata, never LLM-generated
 - **Fully Local Generation** — All inference runs on-device via Ollama; sensitive documents never leave the machine
+- **Production Guardrails** — Import-time config validation catches misconfigurations at startup; per-query logging tracks retrieval scores and generation latency in real time
 
 ## Architecture
 
