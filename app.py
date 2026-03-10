@@ -1,7 +1,7 @@
 import os
 import streamlit as st
-from langchain_core.output_parsers import StrOutputParser
 import rag
+from rag import RAGPipelineError
 import cache
 from config import STRICT_MODE_DEFAULT, VECTORSTORE_PATH, MAX_CONVERSATION_TURNS
 
@@ -169,65 +169,56 @@ if user_input:
         else:
             # Cache miss — full RAG pipeline
             cache_status = "miss"
-            # Review mode: reformulate prose into style topics for retrieval
-            if mode_key == "review":
-                retrieval_query = rag.build_review_query(user_input, llm)
-            else:
-                retrieval_query = user_input
-            docs = rag.retrieve(retrieval_query, vectorstore, skip_threshold=(mode_key == "review"))
-            ranked_docs = rag.rerank_by_priority(docs)
-
-            if not ranked_docs:
-                answer = (
-                    "This topic is not covered in your indexed guides. "
-                    "Consider adding documentation for it."
+            try:
+                result = rag.query(
+                    user_input, vectorstore, llm,
+                    mode=mode_key, strict=strict,
+                    review_llm=review_llm, stream=True,
                 )
+            except RAGPipelineError as e:
+                st.error(f"Pipeline error: {e}")
+                st.stop()
+
+            if "answer" in result:
+                # No relevant chunks — query() returned a refusal
+                answer = result["answer"]
                 st.markdown(answer)
-                citations = []
-                citations_formatted = ""
-                num_chunks = 0
+                citations = result["citations"]
+                citations_formatted = result["citations_formatted"]
+                num_chunks = result["num_chunks"]
             else:
-                # Build chain and stream the response
-                system_prompt = rag.get_system_prompt(mode_key, strict)
-                context = rag.format_context(ranked_docs)
-                active_llm = review_llm if mode_key == "review" else llm
-                chain = (
-                    rag.PROMPT_TEMPLATE
-                    | active_llm
-                    | StrOutputParser()
-                )
-
+                # Streaming response — stream must be fully consumed
+                # before finalize_response() can build citations.
                 try:
-                    stream = chain.stream({
-                        "system_prompt": system_prompt,
-                        "context": context,
-                        "question": user_input,
-                    })
                     raw_response = st.write_stream(
-                        _filter_thinking(stream)
+                        _filter_thinking(result["stream"])
                     )
                 except Exception as e:
+                    # Stream failed mid-generation. Build a partial result
+                    # from the docs we already retrieved so citations and
+                    # history don't silently disappear.
                     st.error(f"Generation failed: {e}")
-                    # st.stop() halts the entire app — fine for single-user local tool.
-                    # For multi-user deployment, replace with early return logic.
-                    st.stop()
+                    answer = "Generation failed — please try again."
+                    citations = rag.build_citations(result["docs"])
+                    citations_formatted = rag.format_citations(citations)
+                    num_chunks = len(result["docs"])
+                else:
+                    final = rag.finalize_response(raw_response, result["docs"])
+                    answer = final["answer"]
+                    citations = final["citations"]
+                    citations_formatted = final["citations_formatted"]
+                    num_chunks = final["num_chunks"]
 
-                answer = rag.strip_thinking(raw_response)
+                    if citations_formatted:
+                        st.divider()
+                        st.markdown(citations_formatted)
 
-                # Programmatic citations — appended below the streamed response
-                citations = rag.build_citations(ranked_docs)
-                citations_formatted = rag.format_citations(citations)
-                if citations_formatted:
-                    st.divider()
-                    st.markdown(citations_formatted)
-                num_chunks = len(ranked_docs)
-
-                # Store in cache (question mode only)
-                if mode_key != "review" and query_embedding:
-                    cache.store_in_cache(
-                        user_input, query_embedding, answer,
-                        citations, mode_key, strict
-                    )
+                    # Store in cache (question mode only)
+                    if mode_key != "review" and query_embedding:
+                        cache.store_in_cache(
+                            user_input, query_embedding, answer,
+                            citations, mode_key, strict
+                        )
 
     # Store in history
     full_response = (

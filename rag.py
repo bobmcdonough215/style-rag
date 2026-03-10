@@ -1,3 +1,4 @@
+import logging
 import re
 import httpx
 from langchain_chroma import Chroma
@@ -5,6 +6,14 @@ from langchain_ollama import OllamaLLM
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
+logger = logging.getLogger(__name__)
+
+
+class RAGPipelineError(Exception):
+    """Raised when a pipeline stage (retrieval, generation) fails."""
+
+
 from config import (
     LLM_MODEL,
     EMBEDDING_MODEL,
@@ -107,14 +116,19 @@ def build_review_query(user_input: str, llm: OllamaLLM) -> str:
     'Vice President John Davis' and 'AP style capitalizes titles before names'.
     """
     prompt = REVIEW_QUERY_EXTRACTION_PROMPT.format(text=user_input[:1000])
-    raw = llm.invoke(prompt)
+    try:
+        raw = llm.invoke(prompt)
+    except Exception as e:
+        logger.warning("Review query reformulation failed, using raw input: %s", e)
+        return user_input
     query = strip_thinking(raw).strip()
     return query if query else user_input
 
 
 # ─── Retrieval ───────────────────────────────────────────────────────────────
 
-def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> list:
+def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False,
+             with_scores: bool = False) -> list:
     """
     Fetch TOP_K * FETCH_K_MULTIPLIER candidate chunks with relevance scores,
     discard any below SIMILARITY_THRESHOLD, then keep the top TOP_K_CHUNKS.
@@ -124,38 +138,30 @@ def retrieve(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> l
     skip_threshold: When True (review mode), skip similarity filtering and
     return the top K chunks regardless of score. Review inputs are prose,
     not questions, so they score low against style guide chunks.
+
+    with_scores: When True, return (doc, score) tuples instead of bare docs.
+    Used by the eval suite to analyze score distributions.
     """
     fetch_k = TOP_K_CHUNKS * FETCH_K_MULTIPLIER
-    docs_with_scores = vectorstore.similarity_search_with_relevance_scores(
-        query, k=fetch_k
-    )
+    try:
+        docs_with_scores = vectorstore.similarity_search_with_relevance_scores(
+            query, k=fetch_k
+        )
+    except Exception as e:
+        logger.error("Vectorstore retrieval failed: %s", e)
+        raise RAGPipelineError(f"Retrieval failed: {e}") from e
     if skip_threshold:
-        return [doc for doc, score in docs_with_scores[:TOP_K_CHUNKS]]
-    # Filter by similarity threshold — prevents hallucination from irrelevant chunks
-    valid = [
-        (doc, score) for doc, score in docs_with_scores
-        if score >= SIMILARITY_THRESHOLD
-    ]
-    # Keep only the top K after filtering
-    return [doc for doc, score in valid[:TOP_K_CHUNKS]]
-
-
-def retrieve_with_scores(query: str, vectorstore: Chroma, skip_threshold: bool = False) -> list:
-    """
-    Same as retrieve() but returns (doc, score) tuples.
-    Used by the eval suite to analyze score distributions and filtering behavior.
-    """
-    fetch_k = TOP_K_CHUNKS * FETCH_K_MULTIPLIER
-    docs_with_scores = vectorstore.similarity_search_with_relevance_scores(
-        query, k=fetch_k
-    )
-    if skip_threshold:
-        return docs_with_scores[:TOP_K_CHUNKS]
-    valid = [
-        (doc, score) for doc, score in docs_with_scores
-        if score >= SIMILARITY_THRESHOLD
-    ]
-    return valid[:TOP_K_CHUNKS]
+        pairs = docs_with_scores[:TOP_K_CHUNKS]
+    else:
+        # Filter by similarity threshold — prevents hallucination from irrelevant chunks
+        valid = [
+            (doc, score) for doc, score in docs_with_scores
+            if score >= SIMILARITY_THRESHOLD
+        ]
+        pairs = valid[:TOP_K_CHUNKS]
+    if with_scores:
+        return pairs
+    return [doc for doc, score in pairs]
 
 
 def rerank_by_priority(docs: list) -> list:
@@ -233,6 +239,7 @@ def query(
     mode: str = "question",
     strict: bool = STRICT_MODE_DEFAULT,
     review_llm: OllamaLLM = None,
+    stream: bool = False,
 ) -> dict:
     """
     Main RAG pipeline entry point.
@@ -241,9 +248,12 @@ def query(
       review_llm: Separate LLM instance tuned for review mode. Uses different
                   Qwen3.5 parameters (higher temp, presence_penalty) to prevent
                   deliberation loops. Falls back to llm if not provided.
+      stream: When True, returns a stream iterator instead of invoking.
+              Caller must join chunks and call finalize_response() afterward.
 
     Returns dict with:
-      - answer: str (cleaned LLM response)
+      - answer: str (cleaned LLM response)  [non-streaming]
+      - stream: iterator, docs: list        [streaming]
       - citations: list[dict] (source metadata from retrieved chunks)
       - citations_formatted: str (ready-to-display citation block)
       - num_chunks: int (how many chunks were used)
@@ -274,11 +284,26 @@ def query(
     # 4. Generate — select the right LLM for the mode
     active_llm = review_llm if (mode == "review" and review_llm) else llm
     chain = PROMPT_TEMPLATE | active_llm | StrOutputParser()
-    raw_response = chain.invoke({
+    prompt_vars = {
         "system_prompt": system_prompt,
         "context": context,
         "question": user_input,
-    })
+    }
+
+    if stream:
+        # Streaming path — returns an iterator for the UI to consume.
+        # Caller is responsible for joining chunks and passing the full
+        # text back through finalize_response() afterward.
+        return {
+            "stream": chain.stream(prompt_vars),
+            "docs": ranked_docs,
+        }
+
+    try:
+        raw_response = chain.invoke(prompt_vars)
+    except Exception as e:
+        logger.error("LLM generation failed: %s", e)
+        raise RAGPipelineError(f"Generation failed: {e}") from e
 
     # 5. Clean response
     answer = strip_thinking(raw_response)
@@ -292,4 +317,20 @@ def query(
         "citations": citations,
         "citations_formatted": citations_formatted,
         "num_chunks": len(ranked_docs),
+    }
+
+
+def finalize_response(raw_response: str, docs: list) -> dict:
+    """
+    Post-process a streamed response: strip thinking tags, build citations.
+    Called by the UI after streaming completes.
+    """
+    answer = strip_thinking(raw_response)
+    citations = build_citations(docs)
+    citations_formatted = format_citations(citations)
+    return {
+        "answer": answer,
+        "citations": citations,
+        "citations_formatted": citations_formatted,
+        "num_chunks": len(docs),
     }
