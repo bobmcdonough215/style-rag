@@ -1,7 +1,209 @@
 # Style RAG
 
-Style RAG is an intelligent, local-first editorial assistant designed to unify and democratize fragmented institutional knowledge for two overlapping audiences: editorial teams managing house style and web operations teams navigating CMS workflows and content governance. In many organizations, these rules live in fragmented PDFs, Slack threads, or dense manuals that are rarely consulted, leading to inconsistencies in both brand voice and digital standards. This system bridges that gap, acting as an automated "Authority Engine" that makes complex documentation instantly queryable through natural language while resolving inherent conflicts between sources.
+A local-first editorial assistant that makes fragmented style guides, CMS documentation, and web content standards instantly queryable through natural language. Built for editorial and web operations teams who need fast, grounded answers from institutional knowledge that typically lives in scattered PDFs, dense manuals, and tribal knowledge.
 
-The system provides a clean two-panel interface built for both direct inquiry and deep content audits. In "Question Mode," users can ask specific procedural questions and receive grounded answers with per-document citations. Alternatively, "Review Mode" allows users to paste raw content for a structured style audit, where the system flags violations, explains the underlying rule, and provides a "Fully Corrected Version" of the text. To ensure compliance, a "Strict Mode" toggle constrains the model's generation exclusively to indexed documents, while a programmatic citation engine eliminates the risk of LLM-hallucinated sources by appending attributions directly from retrieved metadata.
+## Why This Exists
 
-Technically, the project is a high-performance Python application built on LangChain and Streamlit, optimized for Apple Silicon (M4 Pro). To ensure data security, all generation runs locally via Ollama (Qwen 3.5 9B), meaning sensitive document content never leaves the machine. The ingestion pipeline is engineered for production-level efficiency, utilizing file checksums to skip unchanged documents and a schema validation layer to ensure every chunk carries the required metadata for the system's "Resilient Retrieval" pattern. This pattern attempts a metadata-filtered search first to minimize RAM usage, while a priority-weighted reranker ensures house style sources are positioned first in the model's context window—leveraging LLM primacy bias to reinforce source authority. Advanced retrieval is further sharpened by Parent Document Retrieval for context integrity, Embeddings-based Contextual Compression to minimize noise, and a Semantic Cache (SQLite) for near-instant responses on common queries.
+Organizations maintain dozens of overlapping style guides — AP Stylebook, internal house style, CMS workflow docs, WCAG standards — that frequently contradict each other. When an editor asks "how should I format this date?", the answer depends on which guide takes precedence. Style RAG resolves this automatically using a priority-weighted authority system, ensuring house style always wins over external guides.
+
+## Features
+
+- **Question Mode** — Ask natural language questions, get grounded answers with per-document citations
+- **Review Mode** — Paste prose for a structured style audit: flags violations, explains rules, provides a fully corrected version
+- **Strict Mode** — Constrains answers exclusively to indexed documents (no LLM hallucination)
+- **Priority Reranking** — House style (Priority 1) always overrides AP/APA/Chicago (Priority 3) and WCAG (Priority 4)
+- **Semantic Cache** — Near-instant responses on repeated queries via SQLite-backed embedding similarity cache
+- **Programmatic Citations** — Citations are extracted from chunk metadata, never LLM-generated
+- **Fully Local Generation** — All inference runs on-device via Ollama; sensitive documents never leave the machine
+
+## Architecture
+
+```
+User Query
+    │
+    ├─── [Cache Hit?] ──→ Instant response from SQLite cache
+    │
+    ▼
+Embedding (OpenAI text-embedding-3-small)
+    │
+    ▼
+ChromaDB Retrieval (top-12 candidates, cosine similarity)
+    │
+    ├─── Similarity threshold filter (0.30 cutoff)
+    ├─── Priority-weighted reranking (house style first)
+    └─── Top-4 chunks selected
+    │
+    ▼
+Prompt Assembly (mode-specific system prompt + context + query)
+    │
+    ▼
+Qwen3.5-9B Generation (local via Ollama, per-mode parameters)
+    │
+    ▼
+Post-Processing (strip thinking tags, build programmatic citations)
+    │
+    ▼
+Response + Citations
+```
+
+### Key Design Decisions
+
+**Priority-weighted reranking** — Retrieved chunks are sorted by metadata priority before being passed to the LLM. Priority 1 (house style) chunks appear first in the context window, exploiting LLM primacy bias to ensure internal rules override external guides.
+
+**Per-mode LLM parameters** — Question mode uses low temperature (0.3) for factual precision. Review mode uses higher temperature (0.7) to explore more style issues. Parameters are based on Qwen3.5-9B vendor recommendations from the HuggingFace model card.
+
+**Query reformulation for review mode** — Raw prose scores ~0.05 cosine similarity against style guide chunks (near-total retrieval failure). A reformulation layer extracts style-relevant topics from the prose before querying the vectorstore, raising scores to 0.39+ and grounding reviews in the correct rules.
+
+**Programmatic citations** — The LLM is never asked to generate source attributions. Citations are extracted directly from retrieved chunk metadata, eliminating hallucinated references.
+
+## Project Structure
+
+```
+├── app.py              # Streamlit UI — chat interface, streaming, cache integration
+├── rag.py              # Core RAG pipeline — retrieval, reranking, generation, citations
+├── config.py           # All tunable parameters, prompts, and thresholds
+├── ingest.py           # Document ingestion — PDF/web loading, chunking, vectorstore indexing
+├── cache.py            # Semantic cache — SQLite-backed embedding similarity cache
+├── tests/
+│   └── test_rag.py     # 39 unit tests covering core pipeline functions
+├── docs/
+│   ├── house-style/    # Priority 1 — internal style guides (4 PDFs)
+│   ├── editorial/      # Priority 3 — AP, APA, Chicago style guides (4 PDFs)
+│   └── web-content/    # Priority 2 — Sitecore CMS documentation (40+ PDFs)
+├── vectorstore/        # ChromaDB persistent storage (generated by ingest.py)
+└── requirements.txt
+```
+
+## Setup
+
+### Prerequisites
+
+- Python 3.9+
+- [Ollama](https://ollama.ai) installed and running
+- OpenAI API key (for embeddings only — generation is fully local)
+
+### Installation
+
+```bash
+# Clone and set up environment
+git clone <repo-url>
+cd RAG
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Configure API key
+echo "OPENAI_API_KEY=your-key-here" > .env
+
+# Pull the generation model
+ollama pull qwen3.5:9b
+
+# Index documents
+python ingest.py
+
+# Launch the app
+streamlit run app.py
+```
+
+### Ingestion
+
+The ingestion pipeline supports PDFs and web sources with automatic change detection:
+
+```bash
+python ingest.py              # Index new/changed documents only
+python ingest.py --rebuild    # Delete vectorstore and re-index everything
+```
+
+Features:
+- **Checksum-based change detection** — skips unchanged PDFs, always re-fetches web sources
+- **Schema validation** — every chunk must carry source, audience, priority, and doc_type metadata
+- **Doc-type-specific chunking** — style rules get smaller chunks (500 chars), process docs get larger chunks (800 chars)
+- **Auto-discovery** — drop a PDF in `docs/web-content/` and re-run; no config changes needed
+- **Deduplication** — content-hash-based dedup prevents double-indexing
+
+## Testing
+
+```bash
+# Unit tests (no LLM or network required)
+python -m pytest tests/test_rag.py -v    # 39 tests, runs in <1s
+```
+
+Tests cover: `strip_thinking`, `rerank_by_priority`, `build_citations`, `format_citations`, `format_context`, `get_system_prompt`, `retrieve` (with mock vectorstore), `finalize_response`, and `RAGPipelineError`.
+
+## Evaluation
+
+The system includes a custom evaluation suite (`rag_eval.py`) with 23 hand-curated test cases across 9 categories. Evaluation uses a **Claude-as-Judge** architecture (Claude Sonnet 4.6) to avoid circular self-evaluation.
+
+### Results
+
+| Metric | Score |
+|--------|:-----:|
+| **Judge Average** | **4.42 / 5.00** |
+| Faithfulness | 4.65 |
+| Completeness | 4.15 |
+| Conciseness | 4.40 |
+| Refusal Accuracy | 100% |
+| Source Hit Rate | 95.2% |
+| Priority Sort Accuracy | 100% |
+| Avg Latency | 10.9s |
+
+### Test Categories
+
+| Category | Cases | Source Hit Rate |
+|----------|:-----:|:-:|
+| House Style | 4 | 100% |
+| AP Style | 4 | 100% |
+| Sitecore CMS | 5 | 100% |
+| Editorial (APA, Chicago) | 2 | 100% |
+| Web Standards (WCAG, Plain Language) | 2 | 100% |
+| Cross-Priority Conflicts | 2 | 100% |
+| Refusal (out-of-scope) | 2 | N/A |
+| Relaxed Mode | 1 | 100% |
+| Review Mode | 1 | N/A* |
+
+*\*Review mode uses query reformulation + threshold bypass — raw prose inherently scores low against style guide chunks.*
+
+### Running the Eval Suite
+
+```bash
+# Requires Ollama running with qwen3.5:9b loaded
+python rag_eval.py                # Retrieval eval only (fast)
+python rag_eval.py --full         # Full pipeline eval
+python rag_eval.py --judge        # With Claude-as-judge scoring (requires ANTHROPIC_API_KEY)
+python rag_eval.py --verbose      # Per-case detail
+python rag_eval.py --category ap  # Filter by category
+```
+
+## Configuration
+
+All tunables live in `config.py`. Key parameters:
+
+| Parameter | Value | Purpose |
+|-----------|:-----:|---------|
+| `QUESTION_TEMPERATURE` | 0.3 | Low for factual accuracy |
+| `REVIEW_TEMPERATURE` | 0.7 | Higher to explore more style issues |
+| `SIMILARITY_THRESHOLD` | 0.30 | Cosine similarity cutoff for retrieval |
+| `TOP_K_CHUNKS` | 4 | Chunks passed to the LLM per query |
+| `FETCH_K_MULTIPLIER` | 3 | Over-fetch 12 candidates, rerank, keep top 4 |
+| `STRICT_MODE_DEFAULT` | True | Answer only from indexed docs |
+
+### Priority System
+
+| Priority | Source Type | Example |
+|:--------:|------------|---------|
+| 1 | Internal house style | Meridian Web Content Format Standards |
+| 2 | Internal process docs | Sitecore CMS workflows |
+| 3 | External style guides | AP Stylebook, APA 7th Edition, Chicago Manual |
+| 4 | External standards | WCAG 2.2, Plain Language Guidelines |
+
+## Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Generation | Qwen3.5-9B via Ollama | Local LLM inference (Apple Silicon optimized) |
+| Embeddings | OpenAI `text-embedding-3-small` | 1536-dimension vectors for semantic search |
+| Vector Store | ChromaDB | Persistent on-disk vector storage with cosine similarity |
+| UI | Streamlit | Two-panel chat interface with streaming |
+| Framework | LangChain | Pipeline orchestration, document loading, text splitting |
+| Cache | SQLite + NumPy | Semantic similarity cache for repeated queries |
+| Eval Judge | Claude Sonnet 4.6 | External LLM scoring (non-circular evaluation) |
