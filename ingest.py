@@ -4,6 +4,7 @@ import json
 import hashlib
 import argparse
 import shutil
+from datetime import datetime
 from bs4 import SoupStrainer
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -316,6 +317,64 @@ def deduplicate(docs):
     return unique
 
 
+# ─── Vectorstore Snapshots ────────────────────────────────────────────────────
+# Snapshot before each ingest so a bad run can be rolled back without
+# re-embedding everything (saves time and OpenAI API cost).
+
+SNAPSHOT_DIR = "./vectorstore_snapshots"
+MAX_SNAPSHOTS = 3  # Keep the last 3 snapshots, prune older ones
+
+
+def snapshot_vectorstore() -> str:
+    """Copy the current vectorstore to a timestamped snapshot. Returns the path."""
+    if not os.path.exists(VECTORSTORE_PATH):
+        return None
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    snapshot_path = os.path.join(SNAPSHOT_DIR, f"snapshot-{timestamp}")
+    shutil.copytree(VECTORSTORE_PATH, snapshot_path)
+    print(f"Snapshot saved: {snapshot_path}")
+    _prune_snapshots()
+    return snapshot_path
+
+
+def _prune_snapshots():
+    """Keep only the most recent MAX_SNAPSHOTS, delete older ones."""
+    if not os.path.exists(SNAPSHOT_DIR):
+        return
+    snapshots = sorted([
+        d for d in os.listdir(SNAPSHOT_DIR)
+        if d.startswith("snapshot-")
+    ])
+    while len(snapshots) > MAX_SNAPSHOTS:
+        oldest = snapshots.pop(0)
+        shutil.rmtree(os.path.join(SNAPSHOT_DIR, oldest))
+        print(f"  Pruned old snapshot: {oldest}")
+
+
+def list_snapshots() -> list:
+    """Return available snapshots sorted newest first."""
+    if not os.path.exists(SNAPSHOT_DIR):
+        return []
+    return sorted([
+        d for d in os.listdir(SNAPSHOT_DIR)
+        if d.startswith("snapshot-")
+    ], reverse=True)
+
+
+def restore_snapshot(snapshot_name: str):
+    """Replace the current vectorstore with a snapshot."""
+    snapshot_path = os.path.join(SNAPSHOT_DIR, snapshot_name)
+    if not os.path.exists(snapshot_path):
+        print(f"Snapshot not found: {snapshot_name}")
+        return False
+    if os.path.exists(VECTORSTORE_PATH):
+        shutil.rmtree(VECTORSTORE_PATH)
+    shutil.copytree(snapshot_path, VECTORSTORE_PATH)
+    print(f"Restored vectorstore from: {snapshot_name}")
+    return True
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -326,30 +385,68 @@ def main():
         action="store_true",
         help="Delete the existing vectorstore and rebuild from scratch"
     )
+    parser.add_argument(
+        "--restore",
+        metavar="SNAPSHOT",
+        nargs="?",
+        const="latest",
+        help="Restore vectorstore from a snapshot (use --restore to pick latest, or --restore SNAPSHOT_NAME)"
+    )
+    parser.add_argument(
+        "--snapshots",
+        action="store_true",
+        help="List available vectorstore snapshots"
+    )
     args = parser.parse_args()
 
-    # ── 1. Handle --rebuild flag ──────────────────────────────────────────────
+    # ── 1. Handle --snapshots flag ────────────────────────────────────────────
+    if args.snapshots:
+        snapshots = list_snapshots()
+        if not snapshots:
+            print("No snapshots found.")
+        else:
+            print(f"Available snapshots ({len(snapshots)}):")
+            for s in snapshots:
+                print(f"  {s}")
+        return
+
+    # ── 2. Handle --restore flag ──────────────────────────────────────────────
+    if args.restore:
+        if args.restore == "latest":
+            snapshots = list_snapshots()
+            if not snapshots:
+                print("No snapshots available to restore.")
+                return
+            args.restore = snapshots[0]
+        restore_snapshot(args.restore)
+        return
+
+    # ── 3. Handle --rebuild flag ──────────────────────────────────────────────
     if args.rebuild and os.path.exists(VECTORSTORE_PATH):
+        snapshot_vectorstore()
         shutil.rmtree(VECTORSTORE_PATH)
         print("Vectorstore deleted — rebuilding from scratch.\n")
 
-    # ── 2. Validate SOURCES schema before doing any work ─────────────────────
+    # ── 4. Validate SOURCES schema before doing any work ─────────────────────
     print("Validating source configuration...")
     if not validate_sources(SOURCES):
         print("\nAborting: fix the metadata errors above before re-running.")
         return
     print("  ✓ All sources valid.\n")
 
+    # ── 5. Snapshot current vectorstore before making changes ─────────────────
+    snapshot_vectorstore()
+
     embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
-    # ── 3. Load checksum manifest ─────────────────────────────────────────────
+    # ── 6. Load checksum manifest ─────────────────────────────────────────────
     checksums = load_checksums()
     if checksums:
         print(f"Loaded checksum manifest ({len(checksums)} entries).")
     else:
         print("No checksum manifest found — all sources will be indexed.")
 
-    # ── 4. Clear stale chunks for sources that have changed ───────────────────
+    # ── 7. Clear stale chunks for sources that have changed ───────────────────
     if os.path.exists(VECTORSTORE_PATH):
         changed_sources = [
             src for src in SOURCES
@@ -372,7 +469,7 @@ def main():
             print("\nAll sources unchanged — nothing to re-index.")
             return
 
-    # ── 5. Load, tag, chunk, and deduplicate ──────────────────────────────────
+    # ── 8. Load, tag, chunk, and deduplicate ──────────────────────────────────
     documents, updated_checksums = load_and_tag_documents(checksums)
     documents = deduplicate(documents)
 
@@ -382,14 +479,14 @@ def main():
 
     print(f"\nTotal chunks to index: {len(documents)}")
 
-    # ── 6. Index into Chroma ──────────────────────────────────────────────────
+    # ── 9. Index into Chroma ──────────────────────────────────────────────────
     Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         persist_directory=VECTORSTORE_PATH
     )
 
-    # ── 7. Persist updated checksums — only after successful indexing ─────────
+    # ── 10. Persist updated checksums — only after successful indexing ────────
     save_checksums(updated_checksums)
 
     print(f"\nSuccess! Vectorstore updated at '{VECTORSTORE_PATH}'")
